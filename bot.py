@@ -265,6 +265,11 @@ async def main():
     init_db()
     await start_health_server()
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        await bot.set_my_description(config.DESCRIPTION)
+        await bot.set_my_short_description(config.SHORT_DESCRIPTION)
+    except Exception as e:
+        logging.warning("Не удалось обновить описание бота: %s", e)
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
     await dp.start_polling(bot)
