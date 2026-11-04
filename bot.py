@@ -6,6 +6,7 @@ import random
 import sqlite3
 from pathlib import Path
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ParseMode
@@ -246,9 +247,23 @@ async def stats(message: Message):
     await message.answer(text)
 
 
+async def start_health_server():
+    """Мини-сервер для хостингов (Render): отвечает «ok» на запросы пинга."""
+    port = int(os.environ.get("PORT", "0"))
+    if not port:
+        return
+    app = web.Application()
+    app.router.add_get("/", lambda r: web.Response(text="ok"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    logging.info("Health server on port %s", port)
+
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     init_db()
+    await start_health_server()
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
