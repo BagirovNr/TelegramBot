@@ -10,8 +10,6 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ParseMode
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
@@ -78,9 +76,19 @@ def get_p(user_id):
         return c.execute("SELECT * FROM participants WHERE user_id=?", (user_id,)).fetchone()
 
 
-class Form(StatesGroup):
-    name = State()
-    phone = State()
+def contact_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=config.CONTACT_BUTTON, request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def consent_text():
+    text = config.CONSENT_TEXT
+    if config.PRIVACY_URL:
+        text += f'\n<a href="{config.PRIVACY_URL}">Политика обработки персональных данных</a>'
+    return text
 
 
 def subscribe_kb():
@@ -112,8 +120,7 @@ def mask_phone(phone: str) -> str:
 
 # ---------- Гость ----------
 @router.message(CommandStart())
-async def start(message: Message, state: FSMContext, bot: Bot):
-    await state.clear()
+async def start(message: Message, bot: Bot):
     p = get_p(message.from_user.id)
     if p and p["phone"]:
         if p["joined"] or await is_member(bot, message.from_user.id):
@@ -121,44 +128,34 @@ async def start(message: Message, state: FSMContext, bot: Bot):
         else:
             await message.answer(config.SUBSCRIBE_TEXT, reply_markup=subscribe_kb())
         return
-    await message.answer(config.WELCOME_TEXT)
-    await state.set_state(Form.name)
+    await message.answer(config.WELCOME_TEXT + "\n\n" + consent_text(), reply_markup=contact_kb(),
+                         disable_web_page_preview=True)
 
 
-@router.message(Form.name, F.text)
-async def got_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text.strip()[:100])
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-    await message.answer(config.PHONE_TEXT, reply_markup=kb)
-    await state.set_state(Form.phone)
-
-
-@router.message(Form.phone)
-async def got_phone(message: Message, state: FSMContext):
-    if message.contact:
-        phone = message.contact.phone_number
-    elif message.text and sum(ch.isdigit() for ch in message.text) >= 9:
-        phone = message.text.strip()
-    else:
-        await message.answer("Нажмите кнопку «Отправить номер» или напишите номер цифрами.")
+@router.message(F.contact)
+async def got_contact(message: Message):
+    ct, u = message.contact, message.from_user
+    if ct.user_id is not None and ct.user_id != u.id:      # чужой контакт не принимаем
+        await message.answer(config.CONTACT_RETRY, reply_markup=contact_kb())
         return
-    data = await state.get_data()
-    u = message.from_user
+    name = " ".join(x for x in (ct.first_name, ct.last_name) if x).strip() or u.full_name
     with db() as c:
         c.execute(
             """INSERT INTO participants (user_id, username, name, phone)
                VALUES (?,?,?,?)
                ON CONFLICT(user_id) DO UPDATE SET
                  username=excluded.username, name=excluded.name, phone=excluded.phone""",
-            (u.id, u.username, data["name"], phone),
+            (u.id, u.username, name[:100], ct.phone_number),
         )
-    await state.clear()
     await message.answer("Спасибо! 🍫", reply_markup=ReplyKeyboardRemove())
     await message.answer(config.SUBSCRIBE_TEXT, reply_markup=subscribe_kb())
+
+
+@router.message(F.text, ~F.text.startswith("/"))
+async def other_text(message: Message):
+    p = get_p(message.from_user.id)
+    if not p or not p["phone"]:
+        await message.answer(config.CONTACT_RETRY, reply_markup=contact_kb())
 
 
 @router.callback_query(F.data == "check_sub")
