@@ -32,6 +32,8 @@ _gid = os.environ["GROUP_ID"].strip()            # @username публичной 
 GROUP_ID = int(_gid) if _gid.lstrip("-").isdigit() else _gid
 GROUP_LINK = os.environ["GROUP_LINK"]
 ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()}
+# Кому присылать данные каждого нового участника (id через запятую). Если не задано — админам.
+NOTIFY_IDS = {int(x) for x in os.environ.get("NOTIFY_IDS", "").split(",") if x.strip()} or ADMIN_IDS
 DB_PATH = os.environ.get("DB_PATH", "giveaway.db")
 
 BASE = Path(__file__).parent
@@ -133,12 +135,14 @@ async def start(message: Message, bot: Bot):
 
 
 @router.message(F.contact)
-async def got_contact(message: Message):
+async def got_contact(message: Message, bot: Bot):
     ct, u = message.contact, message.from_user
     if ct.user_id is not None and ct.user_id != u.id:      # чужой контакт не принимаем
         await message.answer(config.CONTACT_RETRY, reply_markup=contact_kb())
         return
     name = " ".join(x for x in (ct.first_name, ct.last_name) if x).strip() or u.full_name
+    prev = get_p(u.id)
+    is_new = not (prev and prev["phone"])
     with db() as c:
         c.execute(
             """INSERT INTO participants (user_id, username, name, phone)
@@ -147,6 +151,17 @@ async def got_contact(message: Message):
                  username=excluded.username, name=excluded.name, phone=excluded.phone""",
             (u.id, u.username, name[:100], ct.phone_number),
         )
+    if is_new:
+        with db() as c:
+            total = c.execute("SELECT COUNT(*) FROM participants WHERE phone IS NOT NULL").fetchone()[0]
+        tg = f"@{u.username}" if u.username else "нет username"
+        note = (f"🆕 Новый участник №{total}\nИмя: {name}\nТелефон: {ct.phone_number}\n"
+                f"Telegram: {tg}\nID: {u.id}")
+        for admin_id in NOTIFY_IDS:
+            try:
+                await bot.send_message(admin_id, note)
+            except Exception as e:      # человек ещё не нажимал «Старт» у бота
+                logging.warning("Не удалось отправить данные %s: %s", admin_id, e)
     await message.answer("Спасибо! 🍫", reply_markup=ReplyKeyboardRemove())
     await message.answer(config.SUBSCRIBE_TEXT, reply_markup=subscribe_kb())
 
